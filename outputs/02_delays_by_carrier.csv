@@ -1,0 +1,17 @@
+carrier,name,n_flights,mean_arr_delay,median_arr_delay,pct_late_15
+F9,Frontier Airlines Inc.,681,21.9,6,37.3
+FL,AirTran Airways Corporation,3175,20.1,5,33.5
+EV,ExpressJet Airlines Inc.,51108,15.8,-1,31.4
+YV,Mesa Airlines Inc.,544,15.6,-2,31.4
+OO,SkyWest Airlines Inc.,29,11.9,-7,24.1
+MQ,Envoy Air,25037,10.8,-1,27.1
+WN,Southwest Airlines Co.,12044,9.6,-3,24.9
+B6,JetBlue Airways,54049,9.5,-3,26.1
+9E,Endeavor Air Inc.,17294,7.4,-7,24.9
+UA,United Air Lines Inc.,57782,3.6,-6,21.8
+US,US Airways Inc.,19831,2.1,-6,17.9
+VX,Virgin America,5116,1.8,-9,18.1
+DL,Delta Air Lines Inc.,47658,1.6,-8,18.2
+AA,American Airlines Inc.,31947,0.4,-9,18.8
+HA,Hawaiian Airlines Inc.,342,-6.9,-13,12.6
+AS,Alaska Airlines Inc.,709,-9.9,-17,14.4

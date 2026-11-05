@@ -1,0 +1,9 @@
+# RStudio / R session files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Quarto temporary files
+/.quarto/
+reports/*_files/

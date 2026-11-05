@@ -1,0 +1,364 @@
+---
+title: "NYC Flights 2013: Data, Delays and Weather"
+subtitle: "Practice project using the nycflights13 package"
+author: "Dale Warner"
+date: today
+format:
+  pdf:
+    toc: true
+    df-print: kable
+    fontsize: 10pt
+    geometry: margin=2cm
+    latex-auto-install: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+# Load packages and define one shared chart style used by every figure
+library(tidyverse)
+library(nycflights13)
+
+theme_report <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.background  = element_rect(fill = "white", colour = NA),
+    plot.title       = element_text(colour = "#0b0b0b"),
+    plot.subtitle    = element_text(colour = "#52514e"),
+    axis.text        = element_text(colour = "#52514e"),
+    strip.text       = element_text(colour = "#0b0b0b", face = "bold")
+  )
+
+# Plain-language table headers: code column name -> label shown in the report
+column_labels <- c(
+  table            = "Table",
+  rows             = "Rows",
+  columns          = "Columns",
+  column           = "Column",
+  n_missing        = "Missing",
+  pct_missing      = "% missing",
+  status           = "Status",
+  n                = "Flights",
+  pct              = "% of flights",
+  n_flights        = "Flights",
+  mean_arr_delay   = "Mean arrival delay (min)",
+  median_arr_delay = "Median arrival delay (min)",
+  mean_dep_delay   = "Mean dep. delay (min)",
+  median_dep_delay = "Median dep. delay (min)",
+  pct_late_15      = "% late >15 min",
+  pct_cancelled    = "% cancelled",
+  carrier          = "Code",
+  name             = "Airline",
+  origin           = "Airport",
+  month            = "Month",
+  variable         = "Weather measure",
+  level            = "Condition",
+  check            = "Check",
+  count            = "Count"
+)
+
+# Print a table with readable headers and thousands separators (336,776).
+# Any column without a label keeps its original name.
+show_table <- function(data) {
+  labels <- coalesce(unname(column_labels[names(data)]), names(data))
+  knitr::kable(data, col.names = labels,
+               format.args = list(big.mark = ","))
+}
+```
+
+## Introduction
+
+This report explores the **nycflights13** dataset: every flight that departed
+New York City's three main airports (JFK, LaGuardia and Newark) in 2013, plus
+related tables on airlines, airports, planes and hourly weather. It looks at
+data quality first, then patterns in flight delays, then how weather relates
+to delays and cancellations.
+
+## 1. The data
+
+The package contains five tables:
+
+```{r}
+#| label: table-sizes
+# Put the five tables in a named list so each can be handled the same way
+tables <- list(
+  airlines = airlines,
+  airports = airports,
+  flights  = flights,
+  planes   = planes,
+  weather  = weather
+)
+
+# One row per table: its number of rows and columns
+imap(tables, \(tbl, name) {
+  tibble(table = name, rows = nrow(tbl), columns = ncol(tbl))
+}) |>
+  list_rbind() |>
+  show_table()
+```
+
+Most columns are complete. The columns below have missing values:
+
+```{r}
+#| label: missing-values
+# Count NAs in every column of every table, then keep only columns with gaps
+imap(tables, \(tbl, name) {
+  tbl |>
+    summarise(across(everything(), \(x) sum(is.na(x)))) |>
+    pivot_longer(everything(), names_to = "column",
+                 values_to = "n_missing") |>
+    mutate(pct_missing = round(n_missing / nrow(tbl) * 100, 1)) |>
+    mutate(table = name, .before = 1)
+}) |>
+  list_rbind() |>
+  filter(n_missing > 0) |>
+  show_table()
+```
+
+The gaps in `flights` matter most: flights with no departure time are treated
+as **cancelled** in the rest of this report. `planes$speed` and
+`weather$wind_gust` are mostly empty, so they are not used.
+
+## 2. Flight delays
+
+### Flight status
+
+```{r}
+#| label: flight-status
+# Label each flight: no dep_time = cancelled; departed but no arr_delay =
+# diverted or incomplete record; everything else = completed
+flight_status <- flights |>
+  mutate(status = case_when(
+    is.na(dep_time)  ~ "cancelled",
+    is.na(arr_delay) ~ "no arrival data",
+    .default         = "completed"
+  ))
+
+flight_status |>
+  count(status) |>
+  mutate(pct = round(n / sum(n) * 100, 1)) |>
+  show_table()
+
+completed <- flight_status |>
+  filter(status == "completed")
+```
+
+The rest of this section uses **arrival delay** for completed flights only.
+A flight counts as *late* if it arrived more than 15 minutes behind schedule
+(the FAA's definition). Negative delays mean the flight arrived early.
+
+```{r}
+#| label: delay-function
+# The same delay statistics for any grouping (or none), rounded to 1 decimal
+summarise_delays <- function(data, ...) {
+  data |>
+    group_by(...) |>
+    summarise(
+      n_flights        = n(),
+      mean_arr_delay   = mean(arr_delay),
+      median_arr_delay = median(arr_delay),
+      pct_late_15      = mean(arr_delay > 15) * 100,
+      .groups = "drop"
+    ) |>
+    mutate(across(where(is.double), \(x) round(x, 1)))
+}
+```
+
+### Overall
+
+```{r}
+#| label: delay-overall
+summarise_delays(completed) |>
+  show_table()
+```
+
+The median is well below the mean: most flights arrive on time or early, and a
+smaller number of very late flights pull the average up.
+
+### By airline
+
+```{r}
+#| label: delay-airline
+# Add full airline names, worst average delay first
+summarise_delays(completed, carrier) |>
+  left_join(airlines, by = "carrier") |>
+  relocate(name, .after = carrier) |>
+  arrange(desc(mean_arr_delay)) |>
+  show_table()
+```
+
+Airlines with only a few hundred flights (or fewer) have less reliable
+averages than the large carriers.
+
+### By origin airport
+
+```{r}
+#| label: delay-origin
+summarise_delays(completed, origin) |>
+  show_table()
+```
+
+### By month
+
+```{r}
+#| label: delay-month
+summarise_delays(completed, month) |>
+  show_table()
+```
+
+### By time of day
+
+```{r}
+#| label: delay-hour
+#| fig-width: 7
+#| fig-height: 4
+# Drop hours with fewer than 100 flights so a handful of flights can't
+# distort the line
+by_hour <- summarise_delays(completed, hour) |>
+  filter(n_flights >= 100)
+
+ggplot(by_hour, aes(x = hour, y = mean_arr_delay)) +
+  geom_hline(yintercept = 0, colour = "#c3c2b7", linewidth = 0.4) +
+  geom_line(colour = "#2a78d6", linewidth = 0.8) +
+  geom_point(colour = "#2a78d6", size = 2.5) +
+  scale_x_continuous(breaks = seq(5, 23, by = 2)) +
+  labs(
+    title    = "Average arrival delay by scheduled departure hour",
+    subtitle = "Completed flights only",
+    x        = "Scheduled departure hour (24-hour clock)",
+    y        = "Mean arrival delay (minutes)"
+  ) +
+  theme_report
+```
+
+## 3. Weather and delays
+
+Weather is recorded hourly at each of the three NYC airports, so this section
+switches to **departure delay**. Each flight is matched to the weather at its
+origin airport during its *scheduled* departure hour. Cancelled flights are
+kept, because bad weather may be the reason they were cancelled.
+
+```{r}
+#| label: weather-join
+# Clean weather: impossible wind speeds (> 100 mph) become NA; keep one
+# reading per airport-hour as a safeguard (none were duplicated in testing)
+weather_clean <- weather |>
+  mutate(wind_speed = if_else(wind_speed > 100, NA, wind_speed)) |>
+  select(origin, time_hour, precip, visib, wind_speed) |>
+  distinct(origin, time_hour, .keep_all = TRUE)
+
+# Match each flight to its origin airport's weather at the scheduled hour
+flights_weather <- flights |>
+  left_join(weather_clean, by = c("origin", "time_hour"),
+            relationship = "many-to-one")
+
+# Data-quality checks
+tibble(
+  check = c("Implausible wind speeds set to NA",
+            "Flights with no matching weather reading"),
+  count = c(sum(weather$wind_speed > 100, na.rm = TRUE),
+            sum(is.na(flights_weather$visib)))
+) |>
+  show_table()
+```
+
+```{r}
+#| label: weather-summary
+# Put each weather measure into readable groups (each includes its lower edge)
+flights_binned <- flights_weather |>
+  mutate(
+    precip_group = case_when(
+      is.na(precip)  ~ NA,
+      precip == 0    ~ "None",
+      precip <= 0.1  ~ "Light (up to 0.10 in)",
+      .default       = "Heavier (over 0.10 in)"
+    ) |>
+      factor(levels = c("None", "Light (up to 0.10 in)",
+                        "Heavier (over 0.10 in)")),
+    visib_group = cut(
+      visib, breaks = c(-Inf, 1, 3, 10, Inf), right = FALSE,
+      labels = c("Under 1 mi", "1-3 mi", "3-10 mi", "10 mi (clear)")
+    ),
+    wind_group = cut(
+      wind_speed, breaks = c(-Inf, 10, 20, Inf), right = FALSE,
+      labels = c("Under 10 mph", "10-20 mph", "20+ mph")
+    )
+  )
+
+# Cancellations and departure-delay statistics for one weather grouping
+summarise_by_weather <- function(data, group_col, variable_name) {
+  data |>
+    filter(!is.na({{ group_col }})) |>
+    group_by(level = {{ group_col }}) |>
+    summarise(
+      n_flights        = n(),
+      pct_cancelled    = mean(is.na(dep_time)) * 100,
+      mean_dep_delay   = mean(dep_delay, na.rm = TRUE),
+      median_dep_delay = median(dep_delay, na.rm = TRUE),
+      pct_late_15      = mean(dep_delay > 15, na.rm = TRUE) * 100,
+      .groups = "drop"
+    ) |>
+    mutate(variable = variable_name, level = as.character(level),
+           .before = 1) |>
+    mutate(across(where(is.double), \(x) round(x, 1)))
+}
+
+weather_summary <- bind_rows(
+  summarise_by_weather(flights_binned, precip_group, "Precipitation"),
+  summarise_by_weather(flights_binned, visib_group,  "Visibility"),
+  summarise_by_weather(flights_binned, wind_group,   "Wind speed")
+)
+
+show_table(weather_summary)
+```
+
+```{r}
+#| label: weather-chart
+#| fig-width: 7
+#| fig-height: 4.5
+# One panel per weather measure, shared y-axis so bars are comparable
+weather_summary |>
+  mutate(level = fct_inorder(level)) |>
+  ggplot(aes(x = level, y = mean_dep_delay)) +
+  geom_col(fill = "#2a78d6", width = 0.6) +
+  geom_hline(yintercept = 0, colour = "#c3c2b7", linewidth = 0.4) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(
+    title    = "Mean departure delay by weather at the origin airport",
+    subtitle = "Weather at the scheduled departure hour",
+    x        = NULL,
+    y        = "Mean departure delay (minutes)"
+  ) +
+  theme_report +
+  theme(
+    panel.grid.major.x = element_blank(),
+    axis.text.x        = element_text(angle = 30, hjust = 1)
+  )
+```
+
+## 4. Summary and caveats
+
+**Main patterns**
+
+- Most flights arrive on time or early; average delays are driven by a
+  minority of very late flights.
+- **Time of day** shows the clearest pattern: early-morning flights arrive
+  early on average, and delays build steadily into the evening.
+- Delays are worst in early summer and December, and lowest in autumn.
+- **Precipitation** has the strongest link to delays and cancellations, then
+  **low visibility**, then **wind**.
+
+**Caveats**
+
+- These are descriptive associations, not causes. Rain, low visibility and
+  wind often occur together, and bad weather may cluster at times that are
+  already busy, so their separate effects are not isolated here.
+- Cancellations are inferred from a missing departure time; the data has no
+  explicit cancellation flag.
+- Weather is matched to the *scheduled* departure hour at the *origin*
+  airport only; destination weather is not captured.
+- Small airlines and rare weather conditions have fewer flights, so their
+  figures are less certain.
