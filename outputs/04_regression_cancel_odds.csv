@@ -1,0 +1,8 @@
+measure,condition,odds_ratio,conf.low,conf.high,p.value
+Precipitation,Light (up to 0.10 in),1.92,1.63,2.26,4.1e-15
+Precipitation,Heavier (over 0.10 in),1.52,1.1,2.11,0.012
+Visibility,Under 1 mi,5.27,4.12,6.75,1.1999999999999999e-39
+Visibility,1-3 mi,3,2.35,3.84,1.9e-18
+Visibility,3-10 mi,2.39,2.09,2.73,4.899999999999999e-38
+Wind speed,10-20 mph,1.41,1.28,1.55,1.5e-12
+Wind speed,20+ mph,3.17,2.68,3.76,1.7e-40
