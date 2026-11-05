@@ -21,6 +21,9 @@ execute:
 # Load packages and define one shared chart style used by every figure
 library(tidyverse)
 library(nycflights13)
+library(broom)      # tidy model results
+library(sandwich)   # clustered standard errors
+library(lmtest)     # apply them to the models
 
 theme_report <- theme_minimal(base_size = 12) +
   theme(
@@ -57,7 +60,13 @@ column_labels <- c(
   variable         = "Weather measure",
   level            = "Condition",
   check            = "Check",
-  count            = "Count"
+  count            = "Count",
+  measure          = "Weather measure",
+  condition        = "Condition",
+  model1           = "Weather only (min)",
+  model2           = "+ season, hour, airport (min)",
+  ci95             = "95% CI",
+  odds_ratio       = "Odds ratio"
 )
 
 # Print a table with readable headers and thousands separators (336,776).
@@ -339,7 +348,171 @@ weather_summary |>
   )
 ```
 
-## 4. Summary and caveats
+## 4. Separating the weather effects
+
+Section 3 compared each weather measure on its own, but rain, low visibility
+and wind often occur together, and bad weather may fall at times that are
+already busy. Regression estimates each condition's link with delays **while
+holding the others fixed**. Three models are fitted:
+
+- **Model 1**: departure delay (minutes) on the three weather measures together.
+- **Model 2**: Model 1 plus month, scheduled hour and origin airport.
+- **Model 3**: a logistic regression of whether a flight was cancelled, with
+  the same predictors as Model 2.
+
+All results are relative to **good weather**: no precipitation, 10-mile
+visibility and wind under 10 mph. Flights at the same airport in the same hour
+share identical weather, so standard errors are clustered by airport-hour.
+
+```{r}
+#| label: regression-models
+# Model data: reuse the weather groups from Section 3, drop the single
+# hour-1 flight, set clear visibility as the baseline, and treat month,
+# hour and airport as categories
+model_data <- flights_binned |>
+  filter(hour >= 5) |>
+  mutate(
+    cancelled    = is.na(dep_time),
+    visib_group  = fct_relevel(visib_group, "10 mi (clear)"),
+    month        = factor(month, levels = 1:12, labels = month.abb),
+    hour         = factor(hour),
+    origin       = factor(origin),
+    weather_hour = paste(origin, time_hour)   # cluster ID
+  ) |>
+  drop_na(precip_group, visib_group, wind_group)
+
+departed <- model_data |>
+  filter(!cancelled)
+
+# Fit the three models
+m1_weather <- lm(dep_delay ~ precip_group + visib_group + wind_group,
+                 data = departed)
+
+m2_controls <- lm(dep_delay ~ precip_group + visib_group + wind_group +
+                    month + hour + origin,
+                  data = departed)
+
+m3_cancel <- glm(cancelled ~ precip_group + visib_group + wind_group +
+                   month + hour + origin,
+                 family = binomial, data = model_data)
+
+# Clustered standard errors, then a tidy table with 95% CIs
+tidy_clustered <- function(model, cluster_id) {
+  coeftest(model, vcov. = vcovCL(model, cluster = cluster_id)) |>
+    tidy(conf.int = TRUE)
+}
+
+# Keep only the weather terms, split into measure + condition
+weather_terms <- function(tidy_df) {
+  tidy_df |>
+    filter(str_detect(term, "_group")) |>
+    mutate(
+      measure = case_when(
+        str_starts(term, "precip") ~ "Precipitation",
+        str_starts(term, "visib")  ~ "Visibility",
+        .default                   = "Wind speed"
+      ),
+      condition = str_remove(term, "^(precip|visib|wind)_group"),
+      .before = 1
+    ) |>
+    select(measure, condition, estimate, conf.low, conf.high)
+}
+
+m1_terms <- tidy_clustered(m1_weather,  departed$weather_hour) |>
+  weather_terms()
+m2_terms <- tidy_clustered(m2_controls, departed$weather_hour) |>
+  weather_terms()
+m3_terms <- tidy_clustered(m3_cancel,   model_data$weather_hour) |>
+  weather_terms()
+```
+
+### Delays
+
+```{r}
+#| label: regression-delay-table
+# One row per condition: both models' estimates, plus Model 2's 95% CI
+m2_terms |>
+  left_join(m1_terms |> select(measure, condition, model1 = estimate),
+            by = c("measure", "condition")) |>
+  transmute(
+    measure, condition,
+    model1 = round(model1, 1),
+    model2 = round(estimate, 1),
+    ci95   = sprintf("%.1f to %.1f", conf.low, conf.high)
+  ) |>
+  show_table()
+```
+
+```{r}
+#| label: regression-delay-chart
+#| fig-width: 7
+#| fig-height: 5
+# Dot = estimated extra delay vs good weather; line = 95% CI.
+# Two models, so two colours and a legend.
+bind_rows(
+  "Weather only"                    = m1_terms,
+  "Weather + season, hour, airport" = m2_terms,
+  .id = "model"
+) |>
+  mutate(condition = fct_rev(fct_inorder(condition)),
+         model     = fct_inorder(model)) |>
+  ggplot(aes(x = estimate, y = condition, colour = model)) +
+  geom_vline(xintercept = 0, colour = "#c3c2b7", linewidth = 0.4) +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high),
+                  position = position_dodge(width = 0.6),
+                  size = 0.4, linewidth = 0.7) +
+  facet_grid(measure ~ ., scales = "free_y", space = "free_y") +
+  scale_colour_manual(values = c("#2a78d6", "#eb6834")) +
+  labs(
+    title  = "Extra departure delay compared with good weather",
+    x      = "Extra minutes of departure delay (95% CI)",
+    y      = NULL,
+    colour = NULL
+  ) +
+  theme_report +
+  theme(legend.position = "top",
+        strip.text.y    = element_text(angle = 0, hjust = 0))
+```
+
+Every weather effect remains clearly positive after holding the others fixed.
+The precipitation effect **shrinks** as other factors are added: part of the
+raw rain effect in Section 3 was really low visibility, and part was season
+and time of day. The effect of the **worst visibility grows** once time of day
+is controlled for, possibly because fog is most common in the early morning,
+the least-delayed part of the day (not verified here). Wind has the smallest
+effect on delays.
+
+Weather explains only about `r round(summary(m1_weather)$r.squared * 100)`%
+of the variation in individual flight delays, rising to
+`r round(summary(m2_controls)$r.squared * 100)`% with the controls. Bad weather
+adds substantial delay when it occurs, but it is rare, and most delays come
+from factors not in this data, such as knock-on delays, congestion and
+destination weather.
+
+### Cancellations
+
+```{r}
+#| label: regression-cancel-table
+# Convert log-odds to odds ratios: 3 = three times the odds of cancellation
+# compared with good weather, holding everything else constant
+m3_terms |>
+  transmute(
+    measure, condition,
+    odds_ratio = round(exp(estimate), 2),
+    ci95       = sprintf("%.2f to %.2f", exp(conf.low), exp(conf.high))
+  ) |>
+  show_table()
+```
+
+An **odds ratio** compares the odds of cancellation with those in good
+weather: 1 means no difference, 3 means three times the odds. For
+cancellations the ranking changes: **very low visibility and strong wind**
+are linked with the highest odds, while precipitation matters least once
+visibility is accounted for. Heavier precipitation's odds ratio is not
+clearly different from light precipitation's: the confidence intervals
+overlap and the heavier group is small.
+
+## 5. Summary and caveats
 
 **Main patterns**
 
@@ -348,14 +521,18 @@ weather_summary |>
 - **Time of day** shows the clearest pattern: early-morning flights arrive
   early on average, and delays build steadily into the evening.
 - Delays are worst in early summer and December, and lowest in autumn.
-- **Precipitation** has the strongest link to delays and cancellations, then
-  **low visibility**, then **wind**.
+- **Weather:** holding the other conditions fixed, **precipitation and very
+  low visibility** add the most delay, and wind the least. For
+  **cancellations**, very low visibility and strong wind matter most.
 
 **Caveats**
 
-- These are descriptive associations, not causes. Rain, low visibility and
-  wind often occur together, and bad weather may cluster at times that are
-  already busy, so their separate effects are not isolated here.
+- Section 4 separates the weather measures from each other and from season,
+  time of day and airport, but the results are still associations, not proven
+  causes: factors not in the data (such as destination weather or congestion)
+  could still play a role.
+- Regression estimates average extra minutes, which a small number of very
+  long delays can strongly influence.
 - Cancellations are inferred from a missing departure time; the data has no
   explicit cancellation flag.
 - Weather is matched to the *scheduled* departure hour at the *origin*
